@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bandwidth Calculator</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    label {
+      display: inline-block;
+      width: 200px;
+      margin-top: 10px;
+    }
+
+    input, select {
+      width: 200px;
+      padding: 5px;
+      margin-top: 10px;
+    }
+
+    button {
+      margin-top: 20px;
+      padding: 10px 20px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 30px;
+    }
+
+    th, td {
+      border: 1px solid #ccc;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .warning {
+      color: red;
+    }
+
+    canvas {
+      margin-top: 30px;
+      max-width: 100%;
+      height: auto;
+    }
+  </style>
+  <!-- Include Chart.js from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h1>Bandwidth Calculator</h1>
+
+  <!-- Input Fields -->
+  <div>
+    <label for="fileSize">File Size:</label>
+    <input type="number" id="fileSize" placeholder="Enter file size" min="0" step="any">
+    <select id="fileSizeUnit">
+      <option value="MB">MB</option>
+      <option value="GB">GB</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="users">Concurrent Users:</label>
+    <input type="number" id="users" placeholder="Enter number of users" min="1" step="1">
+  </div>
+
+  <div>
+    <label for="totalBandwidth">Total Bandwidth (Mbps):</label>
+    <input type="number" id="totalBandwidth" placeholder="Enter aggregate bandwidth" min="1" step="any">
+  </div>
+
+  <div>
+    <label for="userBandwidthLimit">User Bandwidth Limit:</label>
+    <select id="userBandwidthLimit">
+      <option value="100">100 Mbps Wired</option>
+      <option value="1000">1000 Mbps Wired</option>
+      <option value="100">100 Mbps Wifi</option>
+    </select>
+  </div>
+
+  <button onclick="calculate()">Calculate</button>
+
+  <!-- Results Table -->
+  <table>
+    <thead>
+      <tr>
+        <th>File Size (MB)</th>
+        <th>Concurrent Users</th>
+        <th>Total Download Data (GB)</th>
+        <th>Total Bandwidth (Mbps)</th>
+        <th>Total Time (Seconds)</th>
+        <th>Total Time (Minutes)</th>
+        <th>Average Completion Time (Seconds)</th>
+        <th>Average Completion Time (Minutes)</th>
+      </tr>
+    </thead>
+    <tbody id="results">
+      <!-- Results will appear here -->
+    </tbody>
+  </table>
+
+  <!-- Chart Canvas -->
+  <canvas id="bandwidthChart" width="800" height="400"></canvas>
+
+  <script>
+    let chart; // Global chart variable
+
+    /**
+     * Simulates download times for each user and calculates bandwidth usage over time.
+     * @param {number} fileSize - Size of the file in MB.
+     * @param {number} users - Number of concurrent users.
+     * @param {number} totalBandwidth - Total available bandwidth in Mbps.
+     * @param {number} userBandwidthLimit - Maximum bandwidth per user in Mbps.
+     * @returns {object} - Results containing total time, time steps, bandwidth usage, completion times, and average completion time.
+     */
+    function calculateDownloadTimes(fileSize, users, totalBandwidth, userBandwidthLimit) {
+      const fileSizeBits = fileSize * 8 * 1024 * 1024; // Convert MB to bits
+      let remainingUsers = users;
+      let timeElapsed = 0;
+
+      // Initialize each user's download status
+      const userDownloads = new Array(users).fill(null).map(() => ({
+        remainingBits: fileSizeBits,
+        completed: false,
+        completionTime: 0
+      }));
+
+      const timeSteps = [];
+      const bandwidthUsage = [];
+
+      // Convert totalBandwidth to bits per second for consistency
+      const totalBandwidthBps = totalBandwidth * 1_000_000; 
+
+      // Continue until all users complete their downloads
+      while (remainingUsers > 0) {
+        // Calculate the number of incomplete users
+        const incompleteUsers = userDownloads.filter(u => !u.completed).length;
+
+        // Calculate available bandwidth per incomplete download
+        const bandwidthPerUser = Math.min(userBandwidthLimit, totalBandwidth / incompleteUsers);
+
+        let bitsTransferredThisStep = 0;
+
+        // Iterate through each user's download status
+        userDownloads.forEach(download => {
+          if (!download.completed) {
+            // Calculate bits transferred for this user in this time step (1 second)
+            const bitsTransferred = Math.min(download.remainingBits, bandwidthPerUser * 1_000_000); // Convert Mbps to bits per second
+
+            // Update remaining bits
+            download.remainingBits -= bitsTransferred;
+            bitsTransferredThisStep += bitsTransferred;
+
+            // Check if download completed
+            if (download.remainingBits <= 0) {
+              download.completed = true;
+              download.completionTime = timeElapsed + 1; // +1 because this step completes at the end of the second
+              remainingUsers--;
+            }
+          }
+        });
+
+        // Record metrics for this time step
+        timeSteps.push(timeElapsed + 1); // +1 to represent the current second
+        bandwidthUsage.push(bitsTransferredThisStep / 1_000_000); // Convert bits to Mbps
+        timeElapsed++;
+      }
+
+      // Calculate average completion time
+      const averageCompletionTime = userDownloads.reduce((acc, d) => acc + d.completionTime, 0) / users;
+
+      return {
+        totalTime: timeElapsed, // in seconds
+        timeSteps,
+        bandwidthUsage,
+        userCompletionTimes: userDownloads.map(d => d.completionTime),
+        averageCompletionTime // in seconds
+      };
+    }
+
+    /**
+     * Updates the Chart.js chart with the latest bandwidth usage data.
+     * @param {object} results - The results object containing time steps and bandwidth usage.
+     */
+    function updateChart(results, totalBandwidth) {
+      const ctx = document.getElementById('bandwidthChart').getContext('2d');
+
+      // Prepare threshold data based on 80% of total bandwidth
+      const threshold = 0.8 * totalBandwidth;
+      const thresholdData = new Array(results.timeSteps.length).fill(threshold);
+
+      if (!chart) {
+        // Create a new chart if it doesn't exist
+        chart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: results.timeSteps,
+            datasets: [
+              {
+                label: 'Bandwidth Usage (Mbps)',
+                data: results.bandwidthUsage,
+                borderColor: 'rgba(75, 192, 192, 1)',
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.1
+              },
+              {
+                label: '80% Threshold (Mbps)',
+                data: thresholdData,
+                borderColor: 'rgba(255, 99, 132, 1)',
+                borderWidth: 2,
+                fill: false,
+                borderDash: [5, 5],
+                pointRadius: 0
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            scales: {
+              y: {
+                beginAtZero: true,
+                suggestedMax: totalBandwidth * 1.1, // Slightly higher than total bandwidth for clarity
+                title: {
+                  display: true,
+                  text: 'Bandwidth (Mbps)'
+                }
+              },
+              x: {
+                title: {
+                  display: true,
+                  text: 'Time (seconds)'
+                }
+              }
+            },
+            plugins: {
+              tooltip: {
+                mode: 'index',
+                intersect: false
+              },
+              legend: {
+                display: true,
+                position: 'top'
+              }
+            },
+            interaction: {
+              mode: 'nearest',
+              axis: 'x',
+              intersect: false
+            },
+            animation: false // Disable animation for real-time updates
+          }
+        });
+      } else {
+        // Update the existing chart with new data
+        chart.data.labels = results.timeSteps;
+        chart.data.datasets[0].data = results.bandwidthUsage;
+        chart.data.datasets[1].data = thresholdData;
+        chart.options.scales.y.suggestedMax = totalBandwidth * 1.1; // Update y-axis max if needed
+        chart.update();
+      }
+    }
+
+    /**
+     * Handles the calculation process when the user clicks the Calculate button.
+     */
+    function calculate() {
+      // Retrieve input values
+      const fileSize = parseFloat(document.getElementById('fileSize').value);
+      const fileSizeUnit = document.getElementById('fileSizeUnit').value;
+      const users = parseInt(document.getElementById('users').value);
+      const totalBandwidth = parseFloat(document.getElementById('totalBandwidth').value);
+      const userBandwidthLimit = parseFloat(document.getElementById('userBandwidthLimit').value);
+
+      // Input validation
+      if (isNaN(fileSize) || isNaN(users) || isNaN(totalBandwidth) || isNaN(userBandwidthLimit)) {
+        alert('Please fill out all fields correctly.');
+        return;
+      }
+
+      if (users < 1) {
+        alert('Number of concurrent users must be at least 1.');
+        return;
+      }
+
+      if (totalBandwidth < 1) {
+        alert('Total bandwidth must be at least 1 Mbps.');
+        return;
+      }
+
+      // Convert file size to MB if it's in GB
+      const fileSizeMB = fileSizeUnit === 'GB' ? fileSize * 1024 : fileSize;
+
+      // Calculate results using the download simulation
+      const results = calculateDownloadTimes(fileSizeMB, users, totalBandwidth, userBandwidthLimit);
+
+      // Calculate total download data in GB
+      const totalDownloadDataGB = (fileSizeMB * users) / 1024;
+
+      // Calculate average completion time in minutes
+      const averageCompletionTimeMinutes = results.averageCompletionTime / 60;
+
+      // Update the results table
+      const row = `
+        <tr>
+          <td>${fileSizeMB.toFixed(2)}</td>
+          <td>${users}</td>
+          <td>${totalDownloadDataGB.toFixed(2)}</td>
+          <td>${totalBandwidth.toFixed(2)}</td>
+          <td>${results.totalTime.toFixed(2)}</td>
+          <td>${(results.totalTime / 60).toFixed(2)}</td>
+          <td>${results.averageCompletionTime.toFixed(2)}</td>
+          <td>${averageCompletionTimeMinutes.toFixed(2)}</td>
+        </tr>
+      `;
+      document.getElementById('results').innerHTML = row;
+
+      // Update the chart with the latest results
+      updateChart(results, totalBandwidth);
+    }
+  </script>
+</body>
+</html>
